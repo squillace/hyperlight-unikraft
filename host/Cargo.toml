@@ -1,0 +1,45 @@
+[package]
+name = "hyperlight-unikraft-host"
+version = "0.1.0"
+edition = "2021"
+description = "Embedded Hyperlight host for running Unikraft unikernels"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "hyperlight_unikraft"
+path = "src/lib.rs"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "hyperlight-unikraft"
+path = "src/main.rs"
+
+[[bin]]
+name = "multifn-test"
+path = "src/bin/multifn_test.rs"
+
+[[bin]]
+name = "pydriver-run"
+path = "src/bin/pydriver_run.rs"
+
+[[bin]]
+name = "pyhl"
+path = "src/bin/pyhl.rs"
+
+[dependencies]
+# Point at danbugs/hyperlight snapshot-to-disk, which is upstream main
+# (the map_file_cow unaligned fix landed there) plus a squashed port of
+# hyperlight-dev/hyperlight#1373 — Ludvig's Snapshot::to_file/from_file
+# feature. We use it to persist a warmed-up sandbox on `pyhl setup` and
+# load it directly on every `pyhl run`, avoiding evolve + warmup per
+# invocation.
+hyperlight-host = { git = "https://github.com/danbugs/hyperlight", branch = "snapshot-to-disk", features = ["executable_heap", "hw-interrupts"] }
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+memmap2 = "0.9"
+serde_json = "1"
+base64 = "0.22"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["fs"] }
+

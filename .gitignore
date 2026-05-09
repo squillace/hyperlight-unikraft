@@ -1,0 +1,29 @@
+# Build artifacts
+target/
+.unikraft/
+.config.*
+
+# Compiled binaries (in examples)
+examples/helloworld-c/hello
+examples/rust/hello
+examples/go/hello
+examples/nodejs/node
+examples/python/python
+
+# Initrd files (generated)
+*.cpio
+rootfs/
+
+# .NET build artifacts
+examples/**/bin/
+examples/**/obj/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
