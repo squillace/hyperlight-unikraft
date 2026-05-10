@@ -64,7 +64,7 @@ use hyperlight_host::func::Registerable;
 use hyperlight_host::sandbox::snapshot::Snapshot;
 use hyperlight_host::sandbox::uninitialized::GuestEnvironment;
 use hyperlight_host::sandbox::SandboxConfiguration;
-use hyperlight_host::{GuestBinary, MultiUseSandbox, UninitializedSandbox};
+use hyperlight_host::{GuestBinary, HostFunctions, MultiUseSandbox, UninitializedSandbox};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -1402,21 +1402,25 @@ impl Sandbox {
     pub fn from_snapshot_file_with<P: AsRef<Path>>(path: P, preopens: &[Preopen]) -> Result<Self> {
         let loaded = Snapshot::from_file_unchecked(path.as_ref())?;
         let arc = Arc::new(loaded);
-        let mut inner = MultiUseSandbox::from_snapshot(arc.clone())?;
 
-        // Wire up the fs_* tool handlers against the caller's preopens.
-        // The snapshot was warmed up with hostfs already mounted, so the
-        // guest will route fs_* calls through __dispatch → the FsRouter
-        // we install here.
+        let mut host_funcs = HostFunctions::default();
         if !preopens.is_empty() {
             if let Some(tools) = build_tools(None, preopens)? {
                 let tools = Arc::new(tools);
                 let tools_ref = tools.clone();
-                inner.register_host_function("__dispatch", move |payload: Vec<u8>| -> Vec<u8> {
-                    tools_ref.dispatch(&payload)
-                })?;
+                host_funcs.register_host_function(
+                    "__dispatch",
+                    move |payload: Vec<u8>| -> Vec<u8> { tools_ref.dispatch(&payload) },
+                )?;
             }
+        } else {
+            host_funcs.register_host_function(
+                "__dispatch",
+                |_payload: Vec<u8>| -> Vec<u8> { Vec::new() },
+            )?;
         }
+
+        let inner = MultiUseSandbox::from_snapshot(arc.clone(), host_funcs, None)?;
 
         Ok(Self {
             inner,
