@@ -1408,16 +1408,15 @@ impl Sandbox {
             if let Some(tools) = build_tools(None, preopens)? {
                 let tools = Arc::new(tools);
                 let tools_ref = tools.clone();
-                host_funcs.register_host_function(
-                    "__dispatch",
-                    move |payload: Vec<u8>| -> Vec<u8> { tools_ref.dispatch(&payload) },
-                )?;
+                host_funcs
+                    .register_host_function("__dispatch", move |payload: Vec<u8>| -> Vec<u8> {
+                        tools_ref.dispatch(&payload)
+                    })?;
             }
         } else {
-            host_funcs.register_host_function(
-                "__dispatch",
-                |_payload: Vec<u8>| -> Vec<u8> { Vec::new() },
-            )?;
+            host_funcs.register_host_function("__dispatch", |_payload: Vec<u8>| -> Vec<u8> {
+                Vec::new()
+            })?;
         }
 
         let inner = MultiUseSandbox::from_snapshot(arc.clone(), host_funcs, None)?;
