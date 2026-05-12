@@ -1355,17 +1355,19 @@ impl Sandbox {
         Ok(())
     }
 
-    /// Persist the current post-evolve (or post-`snapshot_now`) snapshot
-    /// to disk so a later process can skip evolve + init and go straight
-    /// to `call`. Uses hyperlight's `Snapshot::to_file` — the file
-    /// format and cross-platform mmap load are documented in
-    /// hyperlight/docs/snapshot-file-implementation-plan.md.
+    /// Persist the current snapshot to disk as a sparse file.
+    ///
+    /// After writing the raw HLS snapshot, zero-filled 4 KiB pages are
+    /// punched out with `fallocate(PUNCH_HOLE)` so they consume no disk
+    /// space. The file is still mmap-loadable — holes read back as
+    /// zeros with no decompression overhead.
     pub fn save_snapshot<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let snap = self
             .snapshot
             .as_ref()
             .ok_or_else(|| anyhow!("no snapshot present; build() or snapshot_now() first"))?;
         snap.to_file(path.as_ref())?;
+        sparsify_snapshot(path.as_ref())?;
         Ok(())
     }
 
@@ -1528,6 +1530,158 @@ pub fn run_vm_capture_output(
         setup_time,
         evolve_time,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot sparsification
+// ---------------------------------------------------------------------------
+
+/// Punch holes in zero-filled 4 KiB pages of a snapshot file.
+///
+/// The HLS snapshot format is a 4 KiB header followed by a dense memory
+/// blob where ~80 % of pages are all-zeros (unused heap). Punching them
+/// with `fallocate(PUNCH_HOLE)` turns the file sparse — the zeros still
+/// read back via mmap but consume no disk blocks.
+#[cfg(target_os = "linux")]
+fn sparsify_snapshot(path: &Path) -> Result<()> {
+    use std::os::unix::io::AsRawFd;
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?;
+    let len = file.metadata()?.len();
+    let mmap = unsafe { memmap2::Mmap::map(&file)? };
+
+    const PAGE: usize = 4096;
+    const HEADER: usize = PAGE;
+    let zero_page = [0u8; PAGE];
+
+    let mut punched = 0u64;
+    let mut offset = HEADER;
+    while offset + PAGE <= len as usize {
+        if mmap[offset..offset + PAGE] == zero_page {
+            let ret = unsafe {
+                libc::fallocate(
+                    file.as_raw_fd(),
+                    libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
+                    offset as i64,
+                    PAGE as i64,
+                )
+            };
+            if ret == 0 {
+                punched += 1;
+            }
+        }
+        offset += PAGE;
+    }
+    drop(mmap);
+
+    if punched > 0 {
+        eprintln!(
+            "  sparsified: punched {} zero pages ({} MiB saved on disk)",
+            punched,
+            punched * 4 / 1024
+        );
+    }
+
+    Ok(())
+}
+
+/// Windows equivalent: mark the file sparse with FSCTL_SET_SPARSE, then
+/// punch zero ranges with FSCTL_SET_ZERO_DATA.
+#[cfg(target_os = "windows")]
+fn sparsify_snapshot(path: &Path) -> Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Ioctl::{FSCTL_SET_SPARSE, FSCTL_SET_ZERO_DATA};
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?;
+    let len = file.metadata()?.len();
+    let handle = file.as_raw_handle();
+
+    // Mark file as sparse.
+    let ok = unsafe {
+        DeviceIoControl(
+            handle,
+            FSCTL_SET_SPARSE,
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Ok(());
+    }
+
+    let mmap = unsafe { memmap2::Mmap::map(&file)? };
+
+    const PAGE: usize = 4096;
+    const HEADER: usize = PAGE;
+    let zero_page = [0u8; PAGE];
+
+    // Coalesce contiguous zero pages into ranges for fewer syscalls.
+    let mut punched = 0u64;
+    let mut offset = HEADER;
+    while offset + PAGE <= len as usize {
+        if mmap[offset..offset + PAGE] != zero_page {
+            offset += PAGE;
+            continue;
+        }
+        let range_start = offset;
+        while offset + PAGE <= len as usize && mmap[offset..offset + PAGE] == zero_page {
+            offset += PAGE;
+        }
+        let range_end = offset;
+
+        #[repr(C)]
+        struct FileZeroDataInformation {
+            file_offset: i64,
+            beyond_final_zero: i64,
+        }
+
+        let info = FileZeroDataInformation {
+            file_offset: range_start as i64,
+            beyond_final_zero: range_end as i64,
+        };
+        let ok = unsafe {
+            DeviceIoControl(
+                handle,
+                FSCTL_SET_ZERO_DATA,
+                &info as *const _ as *const _,
+                std::mem::size_of::<FileZeroDataInformation>() as u32,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        if ok != 0 {
+            punched += (range_end - range_start) as u64 / PAGE as u64;
+        }
+    }
+    drop(mmap);
+
+    if punched > 0 {
+        eprintln!(
+            "  sparsified: punched {} zero pages ({} MiB saved on disk)",
+            punched,
+            punched * 4 / 1024
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn sparsify_snapshot(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
