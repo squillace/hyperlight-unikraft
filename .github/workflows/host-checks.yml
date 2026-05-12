@@ -71,3 +71,18 @@ jobs:
           # skip themselves if /dev/kvm isn't available.
           RUST_BACKTRACE: '1'
         run: cargo test --all-targets --locked
+
+  all-checks-passed:
+    if: always()
+    needs: [checks]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          results=("${{ needs.checks.result }}")
+          for r in "${results[@]}"; do
+            if [[ "$r" != "success" && "$r" != "skipped" ]]; then
+              echo "Job failed with result: $r"
+              exit 1
+            fi
+          done
+          echo "All checks passed"
