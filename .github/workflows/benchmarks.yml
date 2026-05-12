@@ -444,3 +444,19 @@ jobs:
           Write-Host "| Disk usage | ${diskMiB} MiB |"
           Write-Host ""
           Write-Host "::notice::snapshot: apparent=${apparentMiB}MiB disk=${diskMiB}MiB"
+
+  all-checks-passed:
+    if: always()
+    needs: [build-image, bench-linux, bench-windows]
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - run: |
+          results=("${{ needs.build-image.result }}" "${{ needs.bench-linux.result }}" "${{ needs.bench-windows.result }}")
+          for r in "${results[@]}"; do
+            if [[ "$r" != "success" && "$r" != "skipped" ]]; then
+              echo "Job failed with result: $r"
+              exit 1
+            fi
+          done
+          echo "All checks passed"

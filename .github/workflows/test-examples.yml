@@ -4,6 +4,11 @@ on:
   workflow_dispatch:
   pull_request:
     branches: [main]
+    paths:
+      - 'examples/**'
+      - 'runtimes/**'
+      - 'host/**'
+      - '.github/workflows/test-examples.yml'
   push:
     branches: [main]
     paths:
@@ -738,3 +743,19 @@ jobs:
             Write-Error "FAIL: expected >=5 pandas_ok lines, got $hits"
             exit 1
           }
+
+  all-checks-passed:
+    if: always()
+    needs: [build-example, runtime-test, package-images-for-windows, runtime-test-windows, pyhl-snapshot-test]
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - run: |
+          results=("${{ needs.build-example.result }}" "${{ needs.runtime-test.result }}" "${{ needs.package-images-for-windows.result }}" "${{ needs.runtime-test-windows.result }}" "${{ needs.pyhl-snapshot-test.result }}")
+          for r in "${results[@]}"; do
+            if [[ "$r" != "success" && "$r" != "skipped" ]]; then
+              echo "Job failed with result: $r"
+              exit 1
+            fi
+          done
+          echo "All checks passed"
