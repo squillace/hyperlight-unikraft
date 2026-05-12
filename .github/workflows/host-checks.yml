@@ -28,6 +28,8 @@ concurrency:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 25
     defaults:
       run:
