@@ -672,6 +672,17 @@ jobs:
         with:
           workspaces: host -> target
 
+      - name: Ensure surrogate build consistency (Windows only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $hlsExe = "host\target\release\build\hyperlight-host-*\out\..\..\hls\x86_64-pc-windows-msvc\release\hyperlight_surrogate.exe"
+          if (-not (Resolve-Path $hlsExe -ErrorAction SilentlyContinue)) {
+            Write-Host "Surrogate missing — clearing hyperlight-host fingerprints to force rebuild"
+            Get-ChildItem "host\target\release\.fingerprint" -Filter "hyperlight-host-*" -Directory -ErrorAction SilentlyContinue |
+              Remove-Item -Recurse -Force
+          }
+
       # Linux needs /dev/kvm access to run the guest.
       - name: Enable KVM permissions (Linux only)
         if: runner.os == 'Linux'
@@ -693,12 +704,20 @@ jobs:
             echo "::warning::/dev/kvm is not available; pyhl test skipped"
           fi
 
-      - name: Install pyhl
+      - name: Install pyhl (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cd host
+          cargo build --release --bin pyhl
+          sudo cp target/release/pyhl /usr/local/bin/
+
+      - name: Install pyhl (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           cd host
           cargo build --release --bin pyhl
-          Copy-Item target/release/pyhl* $env:USERPROFILE/.cargo/bin/ -Force
+          Copy-Item target\release\pyhl.exe $env:USERPROFILE\.cargo\bin\ -Force
 
       - name: Download prebuilt python-agent-driver image
         uses: actions/download-artifact@v4
