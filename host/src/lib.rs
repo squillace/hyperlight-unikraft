@@ -874,7 +874,12 @@ fn parse_sockaddr(args: &serde_json::Value) -> Result<SocketAddr> {
 }
 
 fn sockaddr_to_json(addr: SocketAddr) -> serde_json::Value {
+    let family: i32 = match addr {
+        SocketAddr::V4(_) => 2,
+        SocketAddr::V6(_) => 10,
+    };
     serde_json::json!({
+        "family": family,
         "addr": addr.ip().to_string(),
         "port": addr.port(),
     })
