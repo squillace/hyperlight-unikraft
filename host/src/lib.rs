@@ -1292,7 +1292,12 @@ impl Sandbox {
             tools_ref.dispatch(&payload)
         })?;
 
-        Self::finish_evolve(usbox, initrd_path.map(|p| p.to_path_buf()), INITRD_MAP_BASE, exit_code)
+        Self::finish_evolve(
+            usbox,
+            initrd_path.map(|p| p.to_path_buf()),
+            INITRD_MAP_BASE,
+            exit_code,
+        )
     }
 
     fn finish_evolve(
