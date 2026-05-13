@@ -3,8 +3,8 @@ specification: '0.6'
 name: rust-hyperlight
 
 unikraft:
-  source: https://github.com/unikraft/unikraft.git
-  version: plat-hyperlight
+  source: https://github.com/danbugs/unikraft.git
+  version: cpiovfs-fix
   kconfig:
     # Platform
     CONFIG_PLAT_HYPERLIGHT: 'y'
@@ -26,8 +26,11 @@ unikraft:
     # VFS and initrd support
     CONFIG_LIBVFSCORE: 'y'
     CONFIG_LIBVFSCORE_AUTOMOUNT_CI: 'y'
-    CONFIG_LIBVFSCORE_AUTOMOUNT_CI_INITRD: 'y'
-    CONFIG_LIBRAMFS: 'y'
+    CONFIG_LIBVFSCORE_AUTOMOUNT_CI_CUSTOM: 'y'
+    CONFIG_LIBVFSCORE_AUTOMOUNT_CI0_MP: '/'
+    CONFIG_LIBVFSCORE_AUTOMOUNT_CI0_DRIVER: 'cpiovfs'
+    CONFIG_LIBVFSCORE_AUTOMOUNT_CI0_UKOPTS_IFINITRD0: 'y'
+    CONFIG_LIBCPIOVFS: 'y'
     CONFIG_LIBUKCPIO: 'y'
 
     # ELF loader - Rust binary location
@@ -59,7 +62,7 @@ unikraft:
 
 libraries:
   app-elfloader:
-    source: https://github.com/unikraft/app-elfloader.git
+    source: https://github.com/danbugs/app-elfloader.git
     version: plat-hyperlight
   libelf:
     source: https://github.com/unikraft/lib-libelf.git

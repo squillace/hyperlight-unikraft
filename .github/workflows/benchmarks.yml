@@ -81,11 +81,14 @@ jobs:
           kraft-hyperlight --no-prompt build --plat hyperlight --arch x86_64 || true
           if [ ! -d ".unikraft/unikraft" ] || [ -z "$(ls -A .unikraft/unikraft 2>/dev/null)" ]; then
             echo "::warning::kraft didn't clone unikraft sources; cloning manually"
-            UK_BRANCH=$(grep -E '^  version:' kraft.yaml | head -1 | awk '{print $2}')
+            UK_SOURCE=$(awk '/^unikraft:/{f=1} f && /source:/{print $2; exit}' kraft.yaml)
+            UK_BRANCH=$(awk '/^unikraft:/{f=1} f && /version:/{print $2; exit}' kraft.yaml)
+            ELF_SOURCE=$(awk '/app-elfloader:/{f=1} f && /source:/{print $2; exit}' kraft.yaml)
+            ELF_BRANCH=$(awk '/app-elfloader:/{f=1} f && /version:/{print $2; exit}' kraft.yaml)
             mkdir -p .unikraft/apps .unikraft/libs
             rm -rf .unikraft/unikraft .unikraft/apps/elfloader .unikraft/libs/libelf .unikraft/build
-            git clone --branch $UK_BRANCH --depth 1 https://github.com/unikraft/unikraft.git .unikraft/unikraft
-            git clone --branch $UK_BRANCH --depth 1 https://github.com/unikraft/app-elfloader.git .unikraft/apps/elfloader
+            git clone --branch "$UK_BRANCH" --depth 1 "$UK_SOURCE" .unikraft/unikraft
+            git clone --branch "$ELF_BRANCH" --depth 1 "$ELF_SOURCE" .unikraft/apps/elfloader
             git clone --branch staging --depth 1 https://github.com/unikraft/lib-libelf.git .unikraft/libs/libelf
             kraft-hyperlight --no-prompt build --plat hyperlight --arch x86_64
           fi
