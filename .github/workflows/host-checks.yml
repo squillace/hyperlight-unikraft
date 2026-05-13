@@ -78,7 +78,7 @@ jobs:
           RUST_BACKTRACE: '1'
         run: cargo test --all-targets --locked
 
-  all-checks-passed:
+  host-checks-passed:
     if: always()
     needs: [checks]
     runs-on: ubuntu-latest

@@ -768,7 +768,7 @@ jobs:
             exit 1
           }
 
-  all-checks-passed:
+  test-examples-passed:
     if: always()
     needs: [build-example, runtime-test, package-images-for-windows, runtime-test-windows, pyhl-snapshot-test]
     runs-on: ubuntu-latest
