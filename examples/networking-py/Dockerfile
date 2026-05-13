@@ -7,6 +7,7 @@ ARG BASE=ghcr.io/hyperlight-dev/hyperlight-unikraft/python-base:latest
 FROM ${BASE} AS rootfs
 COPY http_get.py /http_get.py
 COPY echo_server.py /echo_server.py
+COPY urllib_get.py /urllib_get.py
 
 # --- CPIO rootfs builder ---
 FROM alpine:3.20 AS cpio

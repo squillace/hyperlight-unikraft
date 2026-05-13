@@ -14,9 +14,13 @@ initrd      := "initrd.cpio"
 memory      := "512Mi"
 image       := "networking-py-hyperlight"
 
-# Run HTTP GET test
+# Run HTTP GET test (raw sockets)
 run-get:
     hyperlight-unikraft {{kernel}} --initrd {{initrd}} --memory {{memory}} -- /http_get.py
+
+# Run HTTP GET test (urllib — high-level stdlib)
+run-urllib:
+    hyperlight-unikraft {{kernel}} --initrd {{initrd}} --memory {{memory}} -- /urllib_get.py
 
 # Run echo server
 run-echo:
