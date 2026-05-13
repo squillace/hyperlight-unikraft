@@ -23,12 +23,14 @@ unikraft:
     CONFIG_OPTIMIZE_SIZE: 'y'
     CONFIG_OPTIMIZE_PIE: 'y'
 
-    # VFS and initrd support - use ramfs with CPIO extraction
-    # (ramfs handles symlinks reliably, which BusyBox needs for applet symlinks)
+    # VFS and initrd support - cpiovfs for zero-copy mount from CPIO
     CONFIG_LIBVFSCORE: 'y'
     CONFIG_LIBVFSCORE_AUTOMOUNT_CI: 'y'
-    CONFIG_LIBVFSCORE_AUTOMOUNT_CI_INITRD: 'y'
-    CONFIG_LIBRAMFS: 'y'
+    CONFIG_LIBVFSCORE_AUTOMOUNT_CI_CUSTOM: 'y'
+    CONFIG_LIBVFSCORE_AUTOMOUNT_CI0_MP: '/'
+    CONFIG_LIBVFSCORE_AUTOMOUNT_CI0_DRIVER: 'cpiovfs'
+    CONFIG_LIBVFSCORE_AUTOMOUNT_CI0_UKOPTS_IFINITRD0: 'y'
+    CONFIG_LIBCPIOVFS: 'y'
     CONFIG_LIBUKCPIO: 'y'
 
     # ELF loader - execute /bin/sh, script/command passed via cmdline
