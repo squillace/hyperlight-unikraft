@@ -809,6 +809,333 @@ fn register_internal_tools(tools: &mut ToolRegistry, exit_code: &Arc<AtomicI32>)
         }
         Ok(serde_json::json!({}))
     });
+    register_net_tools(tools);
+}
+
+// ---------------------------------------------------------------------------
+// Host-proxied networking (hostsock)
+// ---------------------------------------------------------------------------
+
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use std::net::SocketAddr;
+use std::sync::Mutex;
+
+enum HostSocket {
+    Socket(Socket),
+}
+
+struct SocketTable {
+    sockets: HashMap<u32, HostSocket>,
+    next_id: u32,
+}
+
+impl SocketTable {
+    fn new() -> Self {
+        Self {
+            sockets: HashMap::new(),
+            next_id: 1,
+        }
+    }
+
+    fn insert(&mut self, sock: HostSocket) -> u32 {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.sockets.insert(id, sock);
+        id
+    }
+
+    fn get(&self, fd: u32) -> Result<&HostSocket> {
+        self.sockets
+            .get(&fd)
+            .ok_or_else(|| anyhow!("bad_fd: {}", fd))
+    }
+
+    fn get_socket(&self, fd: u32) -> Result<&Socket> {
+        match self.get(fd)? {
+            HostSocket::Socket(s) => Ok(s),
+        }
+    }
+
+    fn remove(&mut self, fd: u32) -> Result<()> {
+        self.sockets
+            .remove(&fd)
+            .map(|_| ())
+            .ok_or_else(|| anyhow!("bad_fd: {}", fd))
+    }
+}
+
+fn parse_sockaddr(args: &serde_json::Value) -> Result<SocketAddr> {
+    let addr_str = args["addr"]
+        .as_str()
+        .ok_or_else(|| anyhow!("missing 'addr'"))?;
+    let port = args["port"].as_u64().unwrap_or(0) as u16;
+    let ip: std::net::IpAddr = addr_str.parse().map_err(|e| anyhow!("bad addr: {}", e))?;
+    Ok(SocketAddr::new(ip, port))
+}
+
+fn sockaddr_to_json(addr: SocketAddr) -> serde_json::Value {
+    serde_json::json!({
+        "addr": addr.ip().to_string(),
+        "port": addr.port(),
+    })
+}
+
+fn register_net_tools(tools: &mut ToolRegistry) {
+    use base64::Engine;
+    use serde_json::json;
+
+    let table = Arc::new(Mutex::new(SocketTable::new()));
+
+    // net_socket
+    let t = table.clone();
+    tools.register("net_socket", move |args| {
+        let family = args["family"].as_i64().unwrap_or(2) as i32; // AF_INET=2
+        let sock_type = args["type"].as_i64().unwrap_or(1) as i32; // SOCK_STREAM=1
+        let protocol = args["protocol"].as_i64().unwrap_or(0) as i32;
+
+        let domain = match family {
+            2 => Domain::IPV4,
+            10 => Domain::IPV6,
+            _ => return Err(anyhow!("InvalidInput: unsupported family {}", family)),
+        };
+        let stype = match sock_type {
+            1 => Type::STREAM,
+            2 => Type::DGRAM,
+            _ => return Err(anyhow!("InvalidInput: unsupported type {}", sock_type)),
+        };
+        let proto = if protocol == 0 {
+            None
+        } else {
+            Some(Protocol::from(protocol))
+        };
+        let sock = Socket::new(domain, stype, proto)?;
+        let fd = t.lock().unwrap().insert(HostSocket::Socket(sock));
+        Ok(json!({ "fd": fd }))
+    });
+
+    // net_connect
+    let t = table.clone();
+    tools.register("net_connect", move |args| {
+        let fd = args["fd"].as_u64().ok_or_else(|| anyhow!("missing 'fd'"))? as u32;
+        let addr = parse_sockaddr(&args)?;
+        let sa: SockAddr = addr.into();
+        let tbl = t.lock().unwrap();
+        let sock = tbl.get_socket(fd)?;
+        sock.connect(&sa)?;
+        Ok(json!({}))
+    });
+
+    // net_bind
+    let t = table.clone();
+    tools.register("net_bind", move |args| {
+        let fd = args["fd"].as_u64().ok_or_else(|| anyhow!("missing 'fd'"))? as u32;
+        let addr = parse_sockaddr(&args)?;
+        let sa: SockAddr = addr.into();
+        let tbl = t.lock().unwrap();
+        let sock = tbl.get_socket(fd)?;
+        sock.bind(&sa)?;
+        Ok(json!({}))
+    });
+
+    // net_listen
+    let t = table.clone();
+    tools.register("net_listen", move |args| {
+        let fd = args["fd"].as_u64().ok_or_else(|| anyhow!("missing 'fd'"))? as u32;
+        let backlog = args["backlog"].as_i64().unwrap_or(128) as i32;
+        let tbl = t.lock().unwrap();
+        let sock = tbl.get_socket(fd)?;
+        sock.listen(backlog)?;
+        Ok(json!({}))
+    });
+
+    // net_accept
+    let t = table.clone();
+    tools.register("net_accept", move |args| {
+        let fd = args["fd"].as_u64().ok_or_else(|| anyhow!("missing 'fd'"))? as u32;
+        let (new_sock, peer) = {
+            let tbl = t.lock().unwrap();
+            let sock = tbl.get_socket(fd)?;
+            sock.accept()?
+        };
+        let peer_addr: Option<SocketAddr> = peer.as_socket();
+        let new_fd = t.lock().unwrap().insert(HostSocket::Socket(new_sock));
+        let mut resp = json!({ "fd": new_fd });
+        if let Some(pa) = peer_addr {
+            resp["addr"] = json!(pa.ip().to_string());
+            resp["port"] = json!(pa.port());
+        }
+        Ok(resp)
+    });
+
+    // net_send
+    let t = table.clone();
+    tools.register("net_send", move |args| {
+        let fd = args["fd"].as_u64().ok_or_else(|| anyhow!("missing 'fd'"))? as u32;
+        let data_b64 = args["data"]
+            .as_str()
+            .ok_or_else(|| anyhow!("missing 'data'"))?;
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(data_b64)
+            .map_err(|e| anyhow!("base64 decode: {}", e))?;
+        let tbl = t.lock().unwrap();
+        let sock = tbl.get_socket(fd)?;
+        let sent = sock.send(&data)?;
+        Ok(json!({ "sent": sent }))
+    });
+
+    // net_sendto
+    let t = table.clone();
+    tools.register("net_sendto", move |args| {
+        let fd = args["fd"].as_u64().ok_or_else(|| anyhow!("missing 'fd'"))? as u32;
+        let data_b64 = args["data"]
+            .as_str()
+            .ok_or_else(|| anyhow!("missing 'data'"))?;
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(data_b64)
+            .map_err(|e| anyhow!("base64 decode: {}", e))?;
+        let addr = parse_sockaddr(&args)?;
+        let sa: SockAddr = addr.into();
+        let tbl = t.lock().unwrap();
+        let sock = tbl.get_socket(fd)?;
+        let sent = sock.send_to(&data, &sa)?;
+        Ok(json!({ "sent": sent }))
+    });
+
+    // net_recv (alias for net_recvfrom with no addr returned for stream)
+    let t = table.clone();
+    tools.register("net_recv", move |args| {
+        let fd = args["fd"].as_u64().ok_or_else(|| anyhow!("missing 'fd'"))? as u32;
+        let len = args["len"].as_u64().unwrap_or(4096) as usize;
+        let mut buf = vec![std::mem::MaybeUninit::uninit(); len.min(65536)];
+        let tbl = t.lock().unwrap();
+        let sock = tbl.get_socket(fd)?;
+        let n = sock.recv(&mut buf)?;
+        let data: Vec<u8> = buf[..n]
+            .iter()
+            .map(|b| unsafe { b.assume_init() })
+            .collect();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
+        Ok(json!({ "data": encoded, "len": n }))
+    });
+
+    // net_recvfrom
+    let t = table.clone();
+    tools.register("net_recvfrom", move |args| {
+        let fd = args["fd"].as_u64().ok_or_else(|| anyhow!("missing 'fd'"))? as u32;
+        let len = args["len"].as_u64().unwrap_or(4096) as usize;
+        let mut buf = vec![0u8; len.min(65536)];
+
+        let buf_init =
+            unsafe { &mut *(buf.as_mut_slice() as *mut [u8] as *mut [std::mem::MaybeUninit<u8>]) };
+
+        let (n, peer) = {
+            let tbl = t.lock().unwrap();
+            let sock = tbl.get_socket(fd)?;
+            sock.recv_from(buf_init)?
+        };
+        buf.truncate(n);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&buf);
+        let mut resp = json!({ "data": encoded, "len": n });
+        if let Some(pa) = peer.as_socket() {
+            resp["addr"] = json!(pa.ip().to_string());
+            resp["port"] = json!(pa.port());
+        }
+        Ok(resp)
+    });
+
+    // net_close
+    let t = table.clone();
+    tools.register("net_close", move |args| {
+        let fd = args["fd"].as_u64().ok_or_else(|| anyhow!("missing 'fd'"))? as u32;
+        t.lock().unwrap().remove(fd)?;
+        Ok(json!({}))
+    });
+
+    // net_shutdown
+    let t = table.clone();
+    tools.register("net_shutdown", move |args| {
+        let fd = args["fd"].as_u64().ok_or_else(|| anyhow!("missing 'fd'"))? as u32;
+        let how = args["how"].as_i64().unwrap_or(2) as i32;
+        let shutdown = match how {
+            0 => std::net::Shutdown::Read,
+            1 => std::net::Shutdown::Write,
+            _ => std::net::Shutdown::Both,
+        };
+        let tbl = t.lock().unwrap();
+        let sock = tbl.get_socket(fd)?;
+        sock.shutdown(shutdown)?;
+        Ok(json!({}))
+    });
+
+    // net_setsockopt
+    let t = table.clone();
+    tools.register("net_setsockopt", move |args| {
+        let fd = args["fd"].as_u64().ok_or_else(|| anyhow!("missing 'fd'"))? as u32;
+        let level = args["level"].as_i64().unwrap_or(0) as i32;
+        let optname = args["optname"].as_i64().unwrap_or(0) as i32;
+        let value = args["value"].as_i64().unwrap_or(0) as i32;
+        let tbl = t.lock().unwrap();
+        let sock = tbl.get_socket(fd)?;
+        // SOL_SOCKET=1, SO_REUSEADDR=2
+        if level == 1 && optname == 2 {
+            sock.set_reuse_address(value != 0)?;
+        }
+        // SOL_SOCKET=1, SO_KEEPALIVE=9
+        if level == 1 && optname == 9 {
+            sock.set_keepalive(value != 0)?;
+        }
+        // IPPROTO_TCP=6, TCP_NODELAY=1
+        if level == 6 && optname == 1 {
+            sock.set_nodelay(value != 0)?;
+        }
+        Ok(json!({}))
+    });
+
+    // net_getsockopt
+    let t = table.clone();
+    tools.register("net_getsockopt", move |args| {
+        let fd = args["fd"].as_u64().ok_or_else(|| anyhow!("missing 'fd'"))? as u32;
+        let level = args["level"].as_i64().unwrap_or(0) as i32;
+        let optname = args["optname"].as_i64().unwrap_or(0) as i32;
+        let tbl = t.lock().unwrap();
+        let sock = tbl.get_socket(fd)?;
+        let val: i32 = if level == 1 && optname == 2 {
+            sock.reuse_address()? as i32
+        } else if level == 6 && optname == 1 {
+            sock.nodelay()? as i32
+        } else {
+            0
+        };
+        Ok(json!({ "value": val }))
+    });
+
+    // net_getpeername
+    let t = table.clone();
+    tools.register("net_getpeername", move |args| {
+        let fd = args["fd"].as_u64().ok_or_else(|| anyhow!("missing 'fd'"))? as u32;
+        let tbl = t.lock().unwrap();
+        let sock = tbl.get_socket(fd)?;
+        let peer = sock.peer_addr()?;
+        if let Some(addr) = peer.as_socket() {
+            Ok(sockaddr_to_json(addr))
+        } else {
+            Ok(json!({ "addr": "0.0.0.0", "port": 0 }))
+        }
+    });
+
+    // net_getsockname
+    let t = table.clone();
+    tools.register("net_getsockname", move |args| {
+        let fd = args["fd"].as_u64().ok_or_else(|| anyhow!("missing 'fd'"))? as u32;
+        let tbl = t.lock().unwrap();
+        let sock = tbl.get_socket(fd)?;
+        let local = sock.local_addr()?;
+        if let Some(addr) = local.as_socket() {
+            Ok(sockaddr_to_json(addr))
+        } else {
+            Ok(json!({ "addr": "0.0.0.0", "port": 0 }))
+        }
+    });
 }
 
 /// Routes incoming fs_* tool calls to the matching `FsSandbox` by
