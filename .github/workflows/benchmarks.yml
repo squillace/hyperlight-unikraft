@@ -329,6 +329,16 @@ jobs:
         with:
           workspaces: host -> target
 
+      - name: Ensure surrogate build consistency
+        shell: pwsh
+        run: |
+          $hlsExe = "host\target\release\build\hyperlight-host-*\out\..\..\hls\x86_64-pc-windows-msvc\release\hyperlight_surrogate.exe"
+          if (-not (Resolve-Path $hlsExe -ErrorAction SilentlyContinue)) {
+            Write-Host "Surrogate missing — clearing hyperlight-host fingerprints to force rebuild"
+            Get-ChildItem "host\target\release\.fingerprint" -Filter "hyperlight-host-*" -Directory -ErrorAction SilentlyContinue |
+              Remove-Item -Recurse -Force
+          }
+
       - name: Install pyhl
         shell: pwsh
         run: |
