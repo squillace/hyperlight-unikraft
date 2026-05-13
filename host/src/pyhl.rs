@@ -46,6 +46,24 @@ use std::time::Instant;
 
 use crate::{Preopen, Sandbox};
 
+/// Default Hyperlight's surrogate-process pool to 1 on Windows.
+///
+/// The surrogate-process manager pre-spawns `HYPERLIGHT_INITIAL_SURROGATES`
+/// Windows processes (default 512) the first time any sandbox is created.
+/// At ~7 ms per `CreateProcessA` that is ~3.5 s of latency that library
+/// callers would pay on the very first sandbox. Pinning the default to 1
+/// drops that to ~7 ms. Callers (or the embedding binary) can still
+/// override by setting the env var before calling into `pyhl`.
+fn default_surrogate_count() {
+    if std::env::var_os("HYPERLIGHT_INITIAL_SURROGATES").is_none() {
+        // Safety: must be called before any sandbox is created and
+        // before additional threads are spawned.
+        unsafe {
+            std::env::set_var("HYPERLIGHT_INITIAL_SURROGATES", "1");
+        }
+    }
+}
+
 /// Standard file names inside an image home.
 pub const KERNEL_FILE: &str = "kernel";
 /// Standard file names inside an image home.
@@ -104,6 +122,7 @@ pub struct InstallReport {
 /// are local file copies. See [`InstallSource`] for each variant's
 /// semantics.
 pub fn install(opts: &InstallOptions<'_>) -> Result<InstallReport> {
+    default_surrogate_count();
     let home = opts.home.to_path_buf();
     let dst_kernel = home.join(KERNEL_FILE);
     let dst_initrd = home.join(INITRD_FILE);
@@ -216,6 +235,7 @@ impl Runtime {
     /// directories to expose under the guest paths that were baked in
     /// at `install` time.
     pub fn new(home: &Path, mounts: &[Preopen]) -> Result<Self> {
+        default_surrogate_count();
         let snap = home.join(SNAPSHOT_FILE);
         if !snap.is_file() {
             bail!(
