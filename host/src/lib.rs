@@ -65,7 +65,8 @@ use hyperlight_host::sandbox::snapshot::Snapshot;
 use hyperlight_host::sandbox::uninitialized::GuestEnvironment;
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::{GuestBinary, HostFunctions, MultiUseSandbox, UninitializedSandbox};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
@@ -153,10 +154,105 @@ impl Preopen {
     }
 }
 
-// Guest VA for the initrd mapped via map_file_cow.
-// Computed dynamically in new_with_file_initrd to be after the
-// primary shared memory region, page-aligned.
-// Falls back to 2 GiB if the sandbox config doesn't have heap info.
+// ---------------------------------------------------------------------------
+// Network policy
+// ---------------------------------------------------------------------------
+
+/// Controls which network destinations a guest sandbox can reach.
+///
+/// By default, networking is **disabled** (no `net_*` tools are registered).
+/// Callers must opt in via [`SandboxBuilder::network`] or the `--net` CLI flag.
+#[derive(Clone, Debug)]
+pub enum NetworkPolicy {
+    /// All outbound connections are allowed (no filtering).
+    AllowAll,
+    /// Only connections to the listed destinations are permitted.
+    AllowList(AllowList),
+}
+
+/// A set of allowed network destinations.
+///
+/// Stores both literal IPs and hostnames. At check time, hostnames are
+/// re-resolved so the policy tracks DNS changes (CDN rotation, etc.).
+#[derive(Clone, Debug)]
+pub struct AllowList {
+    allowed_ips: HashSet<IpAddr>,
+    hostnames: Vec<String>,
+}
+
+impl AllowList {
+    /// Build an allowlist from a mixed set of hostnames and IP literals.
+    ///
+    /// Hostnames are verified to be resolvable at construction time
+    /// (fail-closed). At check time they are re-resolved so CDN/anycast
+    /// rotation doesn't cause false denials.
+    pub fn from_hosts(entries: &[impl AsRef<str>]) -> Result<Self> {
+        use std::net::ToSocketAddrs;
+        let mut allowed_ips = HashSet::new();
+        let mut hostnames = Vec::new();
+        for entry in entries {
+            let entry = entry.as_ref();
+            if let Ok(ip) = entry.parse::<IpAddr>() {
+                allowed_ips.insert(ip);
+            } else {
+                let addrs = (entry, 0u16)
+                    .to_socket_addrs()
+                    .map_err(|e| anyhow!("resolve {:?}: {}", entry, e))?;
+                let mut found = false;
+                for sa in addrs {
+                    allowed_ips.insert(sa.ip());
+                    found = true;
+                }
+                if !found {
+                    return Err(anyhow!("hostname {:?} resolved to zero addresses", entry));
+                }
+                hostnames.push(entry.to_string());
+            }
+        }
+        Ok(Self {
+            allowed_ips,
+            hostnames,
+        })
+    }
+
+    fn is_allowed(&self, ip: &IpAddr) -> bool {
+        if self.allowed_ips.contains(ip) {
+            return true;
+        }
+        // Re-resolve hostnames to catch CDN/anycast IP rotation.
+        use std::net::ToSocketAddrs;
+        for host in &self.hostnames {
+            if let Ok(addrs) = (host.as_str(), 0u16).to_socket_addrs() {
+                for sa in addrs {
+                    if &sa.ip() == ip {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+}
+
+impl NetworkPolicy {
+    fn check(&self, addr: &std::net::SocketAddr) -> Result<()> {
+        match self {
+            NetworkPolicy::AllowAll => Ok(()),
+            NetworkPolicy::AllowList(al) => {
+                // Allow DNS (port 53) — hostname-based allowlists need
+                // the guest to reach DNS servers for resolution.
+                if addr.port() == 53 || al.is_allowed(&addr.ip()) {
+                    Ok(())
+                } else {
+                    Err(anyhow!(
+                        "network policy denies connection to {}",
+                        addr
+                    ))
+                }
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -795,7 +891,13 @@ fn build_tools(
 /// Register internal tools (`__hl_exit`, `__hl_sleep`) on a tool registry.
 /// These are plumbing used by the guest driver (`hl_pydriver.c`) and are
 /// always present regardless of user-supplied tools or preopens.
-fn register_internal_tools(tools: &mut ToolRegistry, exit_code: &Arc<AtomicI32>) {
+///
+/// Networking tools are only registered when a [`NetworkPolicy`] is provided.
+fn register_internal_tools(
+    tools: &mut ToolRegistry,
+    exit_code: &Arc<AtomicI32>,
+    network: Option<&NetworkPolicy>,
+) {
     let ec = exit_code.clone();
     tools.register("__hl_exit", move |args| {
         let code = args["code"].as_i64().unwrap_or(1) as i32;
@@ -809,7 +911,9 @@ fn register_internal_tools(tools: &mut ToolRegistry, exit_code: &Arc<AtomicI32>)
         }
         Ok(serde_json::json!({}))
     });
-    register_net_tools(tools);
+    if let Some(policy) = network {
+        register_net_tools(tools, policy);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -885,11 +989,12 @@ fn sockaddr_to_json(addr: SocketAddr) -> serde_json::Value {
     })
 }
 
-fn register_net_tools(tools: &mut ToolRegistry) {
+fn register_net_tools(tools: &mut ToolRegistry, policy: &NetworkPolicy) {
     use base64::Engine;
     use serde_json::json;
 
     let table = Arc::new(Mutex::new(SocketTable::new()));
+    let policy = Arc::new(policy.clone());
 
     // net_socket
     let t = table.clone();
@@ -920,9 +1025,11 @@ fn register_net_tools(tools: &mut ToolRegistry) {
 
     // net_connect
     let t = table.clone();
+    let pol = policy.clone();
     tools.register("net_connect", move |args| {
         let fd = args["fd"].as_u64().ok_or_else(|| anyhow!("missing 'fd'"))? as u32;
         let addr = parse_sockaddr(&args)?;
+        pol.check(&addr)?;
         let sa: SockAddr = addr.into();
         let tbl = t.lock().unwrap();
         let sock = tbl.get_socket(fd)?;
@@ -990,6 +1097,7 @@ fn register_net_tools(tools: &mut ToolRegistry) {
 
     // net_sendto
     let t = table.clone();
+    let pol = policy.clone();
     tools.register("net_sendto", move |args| {
         let fd = args["fd"].as_u64().ok_or_else(|| anyhow!("missing 'fd'"))? as u32;
         let data_b64 = args["data"]
@@ -999,6 +1107,7 @@ fn register_net_tools(tools: &mut ToolRegistry) {
             .decode(data_b64)
             .map_err(|e| anyhow!("base64 decode: {}", e))?;
         let addr = parse_sockaddr(&args)?;
+        pol.check(&addr)?;
         let sa: SockAddr = addr.into();
         let tbl = t.lock().unwrap();
         let sock = tbl.get_socket(fd)?;
@@ -1427,6 +1536,7 @@ pub struct SandboxBuilder {
     heap_size: Option<u64>,
     stack_size: Option<u64>,
     preopens: Vec<Preopen>,
+    network: Option<NetworkPolicy>,
     tools: ToolRegistry,
     has_tools: bool,
 }
@@ -1482,6 +1592,15 @@ impl SandboxBuilder {
         self
     }
 
+    /// Enable guest networking with the given policy.
+    ///
+    /// Without this call, no `net_*` tools are registered and the guest
+    /// has no network access.
+    pub fn network(mut self, policy: NetworkPolicy) -> Self {
+        self.network = Some(policy);
+        self
+    }
+
     /// Register a host function callable from the guest via `__dispatch`.
     pub fn tool<F>(mut self, name: &str, handler: F) -> Self
     where
@@ -1503,6 +1622,7 @@ impl SandboxBuilder {
         } else {
             None
         };
+        let net = self.network.as_ref();
         match self.initrd {
             Some(InitrdSource::File(path)) => Sandbox::evolve_mapped(
                 &self.kernel,
@@ -1511,6 +1631,7 @@ impl SandboxBuilder {
                 config,
                 tools,
                 &self.preopens,
+                net,
             ),
             Some(InitrdSource::Bytes(bytes)) => Sandbox::evolve_inline(
                 &self.kernel,
@@ -1519,6 +1640,7 @@ impl SandboxBuilder {
                 config,
                 tools,
                 &self.preopens,
+                net,
             ),
             None => Sandbox::evolve_mapped(
                 &self.kernel,
@@ -1527,6 +1649,7 @@ impl SandboxBuilder {
                 config,
                 tools,
                 &self.preopens,
+                net,
             ),
         }
     }
@@ -1543,6 +1666,7 @@ impl Sandbox {
             heap_size: None,
             stack_size: None,
             preopens: Vec::new(),
+            network: None,
             tools: ToolRegistry::new(),
             has_tools: false,
         }
@@ -1556,6 +1680,7 @@ impl Sandbox {
         config: VmConfig,
         tools: Option<ToolRegistry>,
         preopens: &[Preopen],
+        network: Option<&NetworkPolicy>,
     ) -> Result<Self> {
         if !kernel_path.exists() {
             return Err(anyhow!("Kernel not found: {:?}", kernel_path));
@@ -1571,7 +1696,7 @@ impl Sandbox {
 
         let exit_code = Arc::new(AtomicI32::new(0));
         let mut tools = build_tools(tools, preopens)?.unwrap_or_default();
-        register_internal_tools(&mut tools, &exit_code);
+        register_internal_tools(&mut tools, &exit_code, network);
         let tools = Arc::new(tools);
         let tools_ref = tools.clone();
         usbox.register_host_function("__dispatch", move |payload: Vec<u8>| -> Vec<u8> {
@@ -1589,6 +1714,7 @@ impl Sandbox {
         config: VmConfig,
         tools: Option<ToolRegistry>,
         preopens: &[Preopen],
+        network: Option<&NetworkPolicy>,
     ) -> Result<Self> {
         if !kernel_path.exists() {
             return Err(anyhow!("Kernel not found: {:?}", kernel_path));
@@ -1620,7 +1746,7 @@ impl Sandbox {
 
         let exit_code = Arc::new(AtomicI32::new(0));
         let mut tools = build_tools(tools, preopens)?.unwrap_or_default();
-        register_internal_tools(&mut tools, &exit_code);
+        register_internal_tools(&mut tools, &exit_code, network);
         let tools = Arc::new(tools);
         let tools_ref = tools.clone();
         usbox.register_host_function("__dispatch", move |payload: Vec<u8>| -> Vec<u8> {
@@ -1759,7 +1885,7 @@ impl Sandbox {
     /// a 2.5 GB snapshot — enough to double the whole `pyhl run` wall
     /// time on simple scripts.
     pub fn from_snapshot_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        Self::from_snapshot_file_full(path, &[], None)
+        Self::from_snapshot_file_full(path, &[], None, None)
     }
 
     /// Load a previously-persisted snapshot and register a
@@ -1774,7 +1900,7 @@ impl Sandbox {
     /// fixed at setup time because it lives in the snapshot's memory
     /// image.
     pub fn from_snapshot_file_with<P: AsRef<Path>>(path: P, preopens: &[Preopen]) -> Result<Self> {
-        Self::from_snapshot_file_full(path, preopens, None)
+        Self::from_snapshot_file_full(path, preopens, None, None)
     }
 
     /// Load a snapshot with an initrd file re-mapped at the standard
@@ -1786,20 +1912,37 @@ impl Sandbox {
         preopens: &[Preopen],
         initrd: I,
     ) -> Result<Self> {
-        Self::from_snapshot_file_full(path, preopens, Some(initrd.as_ref().to_path_buf()))
+        Self::from_snapshot_file_full(path, preopens, Some(initrd.as_ref().to_path_buf()), None)
+    }
+
+    /// Load a snapshot with full configuration: preopens, initrd, and
+    /// network policy.
+    pub fn from_snapshot_file_configured<P: AsRef<Path>>(
+        path: P,
+        preopens: &[Preopen],
+        initrd: Option<&Path>,
+        network: Option<&NetworkPolicy>,
+    ) -> Result<Self> {
+        Self::from_snapshot_file_full(
+            path,
+            preopens,
+            initrd.map(|p| p.to_path_buf()),
+            network,
+        )
     }
 
     fn from_snapshot_file_full<P: AsRef<Path>>(
         path: P,
         preopens: &[Preopen],
         initrd: Option<std::path::PathBuf>,
+        network: Option<&NetworkPolicy>,
     ) -> Result<Self> {
         let loaded = Snapshot::from_file_unchecked(path.as_ref())?;
         let arc = Arc::new(loaded);
 
         let exit_code = Arc::new(AtomicI32::new(0));
         let mut tools = build_tools(None, preopens)?.unwrap_or_default();
-        register_internal_tools(&mut tools, &exit_code);
+        register_internal_tools(&mut tools, &exit_code, network);
         let tools = Arc::new(tools);
         let tools_ref = tools.clone();
 
@@ -1837,7 +1980,7 @@ pub fn run_vm(
     app_args: &[String],
     config: VmConfig,
 ) -> Result<()> {
-    let _ = Sandbox::evolve_inline(kernel_path, initrd, app_args, config, None, &[])?;
+    let _ = Sandbox::evolve_inline(kernel_path, initrd, app_args, config, None, &[], None)?;
     Ok(())
 }
 
@@ -1849,7 +1992,8 @@ pub fn run_vm_with_tools(
     config: VmConfig,
     tools: ToolRegistry,
 ) -> Result<()> {
-    let _ = Sandbox::evolve_inline(kernel_path, initrd, app_args, config, Some(tools), &[])?;
+    let _ =
+        Sandbox::evolve_inline(kernel_path, initrd, app_args, config, Some(tools), &[], None)?;
     Ok(())
 }
 
@@ -1862,7 +2006,7 @@ pub fn run_vm_with_preopens(
     config: VmConfig,
     preopens: &[Preopen],
 ) -> Result<()> {
-    let _ = Sandbox::evolve_inline(kernel_path, initrd, app_args, config, None, preopens)?;
+    let _ = Sandbox::evolve_inline(kernel_path, initrd, app_args, config, None, preopens, None)?;
     Ok(())
 }
 
@@ -1889,7 +2033,8 @@ pub fn run_vm_capture_output(
 
     // Phase 1: evolve — boots the kernel and takes a post-init snapshot.
     // No application output happens here.
-    let mut sandbox = Sandbox::evolve_inline(kernel_path, initrd, app_args, config, None, &[])?;
+    let mut sandbox =
+        Sandbox::evolve_inline(kernel_path, initrd, app_args, config, None, &[], None)?;
     let setup_time = setup_start.elapsed();
 
     // Redirect stderr to a temp file before the call phase
@@ -2282,5 +2427,68 @@ mod tests {
         let resp = reg.dispatch(r);
         let s = std::str::from_utf8(&resp).unwrap();
         assert!(s.contains("\"text\":\"hi\""), "{s}");
+    }
+
+    // -- NetworkPolicy tests --------------------------------------------------
+
+    #[test]
+    fn network_policy_allow_all_permits_any() {
+        let policy = NetworkPolicy::AllowAll;
+        let addr: std::net::SocketAddr = "1.2.3.4:443".parse().unwrap();
+        assert!(policy.check(&addr).is_ok());
+    }
+
+    #[test]
+    fn network_policy_allowlist_permits_listed_ip() {
+        let al = AllowList::from_hosts(&["1.2.3.4"]).unwrap();
+        let policy = NetworkPolicy::AllowList(al);
+        let addr: std::net::SocketAddr = "1.2.3.4:443".parse().unwrap();
+        assert!(policy.check(&addr).is_ok());
+    }
+
+    #[test]
+    fn network_policy_allowlist_denies_unlisted_ip() {
+        let al = AllowList::from_hosts(&["1.2.3.4"]).unwrap();
+        let policy = NetworkPolicy::AllowList(al);
+        let addr: std::net::SocketAddr = "5.6.7.8:80".parse().unwrap();
+        let err = policy.check(&addr).unwrap_err();
+        assert!(err.to_string().contains("network policy denies"), "{err}");
+    }
+
+    #[test]
+    fn allowlist_resolves_hostnames() {
+        let al = AllowList::from_hosts(&["localhost"]).unwrap();
+        assert!(
+            al.is_allowed(&"127.0.0.1".parse().unwrap())
+                || al.is_allowed(&"::1".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn allowlist_rejects_unresolvable_hostname() {
+        let result = AllowList::from_hosts(&["this.host.definitely.does.not.exist.example"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn net_tools_not_registered_without_policy() {
+        let mut tools = ToolRegistry::new();
+        let exit_code = Arc::new(AtomicI32::new(0));
+        register_internal_tools(&mut tools, &exit_code, None);
+        let req = br#"{"name":"net_socket","args":{"family":2,"type":1}}"#;
+        let resp = tools.dispatch(req);
+        let s = std::str::from_utf8(&resp).unwrap();
+        assert!(s.contains("\"error\""), "net_socket should not exist: {s}");
+    }
+
+    #[test]
+    fn net_tools_registered_with_allow_all() {
+        let mut tools = ToolRegistry::new();
+        let exit_code = Arc::new(AtomicI32::new(0));
+        register_internal_tools(&mut tools, &exit_code, Some(&NetworkPolicy::AllowAll));
+        let req = br#"{"name":"net_socket","args":{"family":2,"type":1}}"#;
+        let resp = tools.dispatch(req);
+        let s = std::str::from_utf8(&resp).unwrap();
+        assert!(s.contains("\"fd\""), "net_socket should work: {s}");
     }
 }
