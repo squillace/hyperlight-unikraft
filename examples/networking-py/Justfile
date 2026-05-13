@@ -22,6 +22,10 @@ run-get:
 run-urllib:
     hyperlight-unikraft {{kernel}} --initrd {{initrd}} --memory {{memory}} -- /urllib_get.py
 
+# Run HTTPS (TLS) test
+run-https:
+    hyperlight-unikraft {{kernel}} --initrd {{initrd}} --memory {{memory}} -- /https_test.py
+
 # Run echo server
 run-echo:
     hyperlight-unikraft {{kernel}} --initrd {{initrd}} --memory {{memory}} -- /echo_server.py

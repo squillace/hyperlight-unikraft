@@ -8,10 +8,11 @@ FROM ${BASE} AS rootfs
 COPY http_get.py /http_get.py
 COPY echo_server.py /echo_server.py
 COPY urllib_get.py /urllib_get.py
+COPY https_test.py /https_test.py
 
 # --- CPIO rootfs builder ---
 FROM alpine:3.20 AS cpio
-RUN apk add --no-cache cpio findutils
+RUN apk add --no-cache cpio findutils ca-certificates
 COPY --from=rootfs / /rootfs/
 
 # DNS configuration for glibc's getaddrinfo (added in the cpio stage
@@ -21,5 +22,10 @@ RUN mkdir -p /rootfs/etc && \
     echo "nameserver 8.8.4.4" >> /rootfs/etc/resolv.conf && \
     echo "hosts: files dns" > /rootfs/etc/nsswitch.conf && \
     echo "127.0.0.1 localhost" > /rootfs/etc/hosts
+
+# CA certificates for TLS
+RUN mkdir -p /rootfs/etc/ssl/certs /rootfs/usr/lib/ssl && \
+    cp /etc/ssl/certs/ca-certificates.crt /rootfs/etc/ssl/certs/ && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /rootfs/usr/lib/ssl/cert.pem
 
 RUN cd /rootfs && find . | cpio -o -H newc > /output.cpio 2>/dev/null
