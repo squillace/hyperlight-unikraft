@@ -1104,7 +1104,10 @@ fn register_net_tools(tools: &mut ToolRegistry) {
         let optname = args["optname"].as_i64().unwrap_or(0) as i32;
         let tbl = t.lock().unwrap();
         let sock = tbl.get_socket(fd)?;
-        let val: i32 = if level == 1 && optname == 2 {
+        let val: i32 = if level == 1 && optname == 3 {
+            // SOL_SOCKET + SO_TYPE — all our sockets are SOCK_STREAM
+            1
+        } else if level == 1 && optname == 2 {
             sock.reuse_address()? as i32
         } else if level == 6 && optname == 1 {
             sock.nodelay()? as i32
