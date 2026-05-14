@@ -581,6 +581,7 @@ fn fresh_seed() -> u128 {
 // -- main ---------------------------------------------------------------------
 
 fn main() -> Result<()> {
+    hyperlight_unikraft::pyhl::default_surrogate_count();
     let cli = Cli::parse();
     match cli.cmd {
         Command::Setup(args) => cmd_setup(args),

@@ -54,7 +54,7 @@ use crate::{Preopen, Sandbox};
 /// callers would pay on the very first sandbox. Pinning the default to 1
 /// drops that to ~7 ms. Callers (or the embedding binary) can still
 /// override by setting the env var before calling into `pyhl`.
-fn default_surrogate_count() {
+pub fn default_surrogate_count() {
     if std::env::var_os("HYPERLIGHT_INITIAL_SURROGATES").is_none() {
         // Safety: must be called before any sandbox is created and
         // before additional threads are spawned.
