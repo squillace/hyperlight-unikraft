@@ -112,12 +112,12 @@ jobs:
         working-directory: examples/${{ matrix.example }}
         run: |
           kraft-hyperlight --no-prompt build --plat hyperlight --arch x86_64 || true
-          # Fallback: kraft's source-resolution path is flaky (it sometimes
-          # probes + finds the repo but skips the pull and leaves
-          # .unikraft/unikraft empty — see memory/feedback_kraft_clean_rebuild).
-          # Manually clone the components and rebuild with --no-fetch/--no-update.
-          if [ ! -d ".unikraft/unikraft" ] || [ -z "$(ls -A .unikraft/unikraft 2>/dev/null)" ]; then
-            echo "::warning::kraft didn't clone unikraft sources; cloning manually"
+          # Fallback: kraft's source-resolution is flaky — it can partially
+          # clone (e.g. unikraft but not libelf) or leave dirs empty. Check
+          # for the actual kernel output; if missing, nuke everything and
+          # clone + build from scratch.
+          if ! ls .unikraft/build/*_hyperlight-x86_64 >/dev/null 2>&1; then
+            echo "::warning::kraft build produced no kernel; cloning manually and rebuilding"
             UK_SOURCE=$(awk '/^unikraft:/{f=1} f && /source:/{print $2; exit}' kraft.yaml)
             UK_BRANCH=$(awk '/^unikraft:/{f=1} f && /version:/{print $2; exit}' kraft.yaml)
             ELF_SOURCE=$(awk '/app-elfloader:/{f=1} f && /source:/{print $2; exit}' kraft.yaml)
@@ -300,8 +300,8 @@ jobs:
         run: |
           just rootfs
           kraft-hyperlight --no-prompt build --plat hyperlight --arch x86_64 || true
-          if [ ! -d ".unikraft/unikraft" ] || [ -z "$(ls -A .unikraft/unikraft 2>/dev/null)" ]; then
-            echo "::warning::kraft didn't clone unikraft sources; cloning manually"
+          if ! ls .unikraft/build/*_hyperlight-x86_64 >/dev/null 2>&1; then
+            echo "::warning::kraft build produced no kernel; cloning manually and rebuilding"
             UK_SOURCE=$(awk '/^unikraft:/{f=1} f && /source:/{print $2; exit}' kraft.yaml)
             UK_BRANCH=$(awk '/^unikraft:/{f=1} f && /version:/{print $2; exit}' kraft.yaml)
             ELF_SOURCE=$(awk '/app-elfloader:/{f=1} f && /source:/{print $2; exit}' kraft.yaml)
@@ -445,7 +445,8 @@ jobs:
         run: |
           just rootfs
           kraft-hyperlight --no-prompt build --plat hyperlight --arch x86_64 || true
-          if [ ! -d ".unikraft/unikraft" ] || [ -z "$(ls -A .unikraft/unikraft 2>/dev/null)" ]; then
+          if ! ls .unikraft/build/*_hyperlight-x86_64 >/dev/null 2>&1; then
+            echo "::warning::kraft build produced no kernel; cloning manually and rebuilding"
             UK_SOURCE=$(awk '/^unikraft:/{f=1} f && /source:/{print $2; exit}' kraft.yaml)
             UK_BRANCH=$(awk '/^unikraft:/{f=1} f && /version:/{print $2; exit}' kraft.yaml)
             ELF_SOURCE=$(awk '/app-elfloader:/{f=1} f && /source:/{print $2; exit}' kraft.yaml)
