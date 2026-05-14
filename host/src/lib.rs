@@ -244,10 +244,7 @@ impl NetworkPolicy {
                 if addr.port() == 53 || al.is_allowed(&addr.ip()) {
                     Ok(())
                 } else {
-                    Err(anyhow!(
-                        "network policy denies connection to {}",
-                        addr
-                    ))
+                    Err(anyhow!("network policy denies connection to {}", addr))
                 }
             }
         }
@@ -1923,12 +1920,7 @@ impl Sandbox {
         initrd: Option<&Path>,
         network: Option<&NetworkPolicy>,
     ) -> Result<Self> {
-        Self::from_snapshot_file_full(
-            path,
-            preopens,
-            initrd.map(|p| p.to_path_buf()),
-            network,
-        )
+        Self::from_snapshot_file_full(path, preopens, initrd.map(|p| p.to_path_buf()), network)
     }
 
     fn from_snapshot_file_full<P: AsRef<Path>>(
@@ -1992,8 +1984,15 @@ pub fn run_vm_with_tools(
     config: VmConfig,
     tools: ToolRegistry,
 ) -> Result<()> {
-    let _ =
-        Sandbox::evolve_inline(kernel_path, initrd, app_args, config, Some(tools), &[], None)?;
+    let _ = Sandbox::evolve_inline(
+        kernel_path,
+        initrd,
+        app_args,
+        config,
+        Some(tools),
+        &[],
+        None,
+    )?;
     Ok(())
 }
 
@@ -2459,8 +2458,7 @@ mod tests {
     fn allowlist_resolves_hostnames() {
         let al = AllowList::from_hosts(&["localhost"]).unwrap();
         assert!(
-            al.is_allowed(&"127.0.0.1".parse().unwrap())
-                || al.is_allowed(&"::1".parse().unwrap())
+            al.is_allowed(&"127.0.0.1".parse().unwrap()) || al.is_allowed(&"::1".parse().unwrap())
         );
     }
 

@@ -39,7 +39,9 @@ fn parse_mount(spec: &str) -> Result<Preopen> {
 
 fn build_network_policy(net: bool, net_allow: &[String]) -> Result<Option<NetworkPolicy>> {
     if !net_allow.is_empty() {
-        Ok(Some(NetworkPolicy::AllowList(AllowList::from_hosts(net_allow)?)))
+        Ok(Some(NetworkPolicy::AllowList(AllowList::from_hosts(
+            net_allow,
+        )?)))
     } else if net {
         Ok(Some(NetworkPolicy::AllowAll))
     } else {

@@ -262,8 +262,7 @@ impl Runtime {
         } else {
             None
         };
-        let sandbox =
-            Sandbox::from_snapshot_file_configured(&snap, mounts, initrd_ref, network)?;
+        let sandbox = Sandbox::from_snapshot_file_configured(&snap, mounts, initrd_ref, network)?;
         Ok(Self {
             sandbox,
             first_run: true,

@@ -164,7 +164,9 @@ fn main() -> Result<()> {
     };
 
     let network = if !args.net_allow.is_empty() {
-        Some(NetworkPolicy::AllowList(AllowList::from_hosts(&args.net_allow)?))
+        Some(NetworkPolicy::AllowList(AllowList::from_hosts(
+            &args.net_allow,
+        )?))
     } else if args.net {
         Some(NetworkPolicy::AllowAll)
     } else {
