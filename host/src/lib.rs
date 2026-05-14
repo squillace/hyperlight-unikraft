@@ -1807,6 +1807,7 @@ impl Sandbox {
     }
 
     /// Low-level: boot with an in-memory initrd buffer. Prefer the builder.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn evolve_inline(
         kernel_path: &Path,
         initrd: Option<&[u8]>,
@@ -1842,6 +1843,7 @@ impl Sandbox {
     }
 
     /// Low-level: boot with a zero-copy mapped initrd file. Prefer the builder.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn evolve_mapped(
         kernel_path: &Path,
         initrd_path: Option<&Path>,
