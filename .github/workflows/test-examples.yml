@@ -65,6 +65,7 @@ jobs:
           - python-agent
           - python-agent-driver
           - powershell
+          - networking-py
     steps:
       - uses: actions/checkout@v4
 
@@ -232,6 +233,10 @@ jobs:
             memory: "1Gi"
             args: "-- -NoProfile -File /scripts/hello.ps1"
             expect: "Hello, World! From PowerShell on Hyperlight"
+          - example: networking-py
+            memory: "512Mi"
+            args: "--net -- /urllib_get.py"
+            expect: "SUCCESS: urllib GET worked!"
     steps:
       - uses: actions/checkout@v4
 
@@ -402,6 +407,7 @@ jobs:
           - python-agent
           - python-agent-driver
           - powershell
+          - networking-py
     steps:
       - uses: actions/checkout@v4
 
@@ -559,6 +565,10 @@ jobs:
             memory: "1Gi"
             args: "-- -NoProfile -File /scripts/hello.ps1"
             expect: "Hello, World! From PowerShell on Hyperlight"
+          - example: networking-py
+            memory: "512Mi"
+            args: "--net -- /urllib_get.py"
+            expect: "SUCCESS: urllib GET worked!"
     steps:
       - uses: actions/checkout@v4
 
