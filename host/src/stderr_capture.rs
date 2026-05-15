@@ -28,8 +28,7 @@ mod imp {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let capture_file = std::fs::File::create(path)?;
-            let original_stderr =
-                OwnedFd::from(unistd::dup(2).map(|fd| unsafe { OwnedFd::from_raw_fd(fd) })?);
+            let original_stderr = unistd::dup(2).map(|fd| unsafe { OwnedFd::from_raw_fd(fd) })?;
             unistd::dup2(capture_file.as_raw_fd(), 2)?;
             // capture_file dropped here — its OwnedFd closes the fd via RAII
             Ok(Self {
