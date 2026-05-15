@@ -892,7 +892,7 @@ fn register_internal_tools(
     exit_code: &Arc<AtomicI32>,
     network: Option<&NetworkPolicy>,
     listen_ports: Option<&ListenPorts>,
-) {
+) -> Option<Arc<Mutex<SocketTable>>> {
     let ec = exit_code.clone();
     tools.register("__hl_exit", move |args| {
         let code = args["code"].as_i64().unwrap_or(1) as i32;
@@ -906,9 +906,7 @@ fn register_internal_tools(
         }
         Ok(serde_json::json!({}))
     });
-    if let Some(policy) = network {
-        register_net_tools(tools, policy, listen_ports);
-    }
+    network.map(|policy| register_net_tools(tools, policy, listen_ports))
 }
 
 // ---------------------------------------------------------------------------
@@ -923,6 +921,8 @@ enum HostSocket {
     Socket(Socket, i32),
 }
 
+const MAX_SOCKETS: usize = 1024;
+
 struct SocketTable {
     sockets: HashMap<u64, HostSocket>,
     next_id: u64,
@@ -936,11 +936,19 @@ impl SocketTable {
         }
     }
 
-    fn insert(&mut self, sock: HostSocket) -> u64 {
+    fn insert(&mut self, sock: HostSocket) -> Result<u64> {
+        if self.sockets.len() >= MAX_SOCKETS {
+            return Err(anyhow!("socket limit reached (max {})", MAX_SOCKETS));
+        }
         let id = self.next_id;
         self.next_id += 1;
         self.sockets.insert(id, sock);
-        id
+        Ok(id)
+    }
+
+    fn clear(&mut self) {
+        self.sockets.clear();
+        self.next_id = 1;
     }
 
     fn get(&self, fd: u64) -> Result<&HostSocket> {
@@ -994,7 +1002,7 @@ fn register_net_tools(
     tools: &mut ToolRegistry,
     policy: &NetworkPolicy,
     listen_ports: Option<&ListenPorts>,
-) {
+) -> Arc<Mutex<SocketTable>> {
     use base64::Engine;
     use serde_json::json;
 
@@ -1027,7 +1035,7 @@ fn register_net_tools(
         let fd = t
             .lock()
             .unwrap()
-            .insert(HostSocket::Socket(sock, sock_type));
+            .insert(HostSocket::Socket(sock, sock_type))?;
         Ok(json!({ "fd": fd }))
     });
 
@@ -1088,7 +1096,7 @@ fn register_net_tools(
         let new_fd = t
             .lock()
             .unwrap()
-            .insert(HostSocket::Socket(new_sock, parent_type));
+            .insert(HostSocket::Socket(new_sock, parent_type))?;
         let mut resp = json!({ "fd": new_fd });
         if let Some(pa) = peer_addr {
             resp["addr"] = json!(pa.ip().to_string());
@@ -1270,6 +1278,8 @@ fn register_net_tools(
             Ok(json!({ "addr": "0.0.0.0", "port": 0 }))
         }
     });
+
+    table
 }
 
 /// Routes incoming fs_* tool calls to the matching `FsSandbox` by
@@ -1523,6 +1533,9 @@ pub struct Sandbox {
     file_mapping_path: Option<std::path::PathBuf>,
     file_mapping_base: u64,
     exit_code: Arc<AtomicI32>,
+    /// Shared socket table — cleared on [`Sandbox::restore`] so that
+    /// host-side fds don't leak across guest restore cycles.
+    socket_table: Option<Arc<Mutex<SocketTable>>>,
 }
 
 /// Where the initrd comes from — either a file (zero-copy `map_file_cow`)
@@ -1732,14 +1745,14 @@ impl Sandbox {
 
         let exit_code = Arc::new(AtomicI32::new(0));
         let mut tools = build_tools(tools, preopens)?.unwrap_or_default();
-        register_internal_tools(&mut tools, &exit_code, network, listen_ports);
+        let socket_table = register_internal_tools(&mut tools, &exit_code, network, listen_ports);
         let tools = Arc::new(tools);
         let tools_ref = tools.clone();
         usbox.register_host_function("__dispatch", move |payload: Vec<u8>| -> Vec<u8> {
             tools_ref.dispatch(&payload)
         })?;
 
-        Self::finish_evolve(usbox, None, 0, exit_code)
+        Self::finish_evolve(usbox, None, 0, exit_code, socket_table)
     }
 
     /// Low-level: boot with a zero-copy mapped initrd file. Prefer the builder.
@@ -1784,7 +1797,7 @@ impl Sandbox {
 
         let exit_code = Arc::new(AtomicI32::new(0));
         let mut tools = build_tools(tools, preopens)?.unwrap_or_default();
-        register_internal_tools(&mut tools, &exit_code, network, listen_ports);
+        let socket_table = register_internal_tools(&mut tools, &exit_code, network, listen_ports);
         let tools = Arc::new(tools);
         let tools_ref = tools.clone();
         usbox.register_host_function("__dispatch", move |payload: Vec<u8>| -> Vec<u8> {
@@ -1796,6 +1809,7 @@ impl Sandbox {
             initrd_path.map(|p| p.to_path_buf()),
             INITRD_MAP_BASE,
             exit_code,
+            socket_table,
         )
     }
 
@@ -1804,6 +1818,7 @@ impl Sandbox {
         file_mapping_path: Option<std::path::PathBuf>,
         file_mapping_base: u64,
         exit_code: Arc<AtomicI32>,
+        socket_table: Option<Arc<Mutex<SocketTable>>>,
     ) -> Result<Self> {
         let mut inner = usbox.evolve()?;
         let snapshot = inner.snapshot().ok();
@@ -1813,6 +1828,7 @@ impl Sandbox {
             file_mapping_path,
             file_mapping_base,
             exit_code,
+            socket_table,
         })
     }
 
@@ -1829,6 +1845,10 @@ impl Sandbox {
         if let Some(ref path) = self.file_mapping_path {
             self.inner
                 .map_file_cow(path, self.file_mapping_base, Some("initrd"))?;
+        }
+        // Close leaked host-side sockets the guest "forgot" about.
+        if let Some(ref table) = self.socket_table {
+            table.lock().unwrap().clear();
         }
         Ok(())
     }
@@ -1989,7 +2009,7 @@ impl Sandbox {
 
         let exit_code = Arc::new(AtomicI32::new(0));
         let mut tools = build_tools(None, preopens)?.unwrap_or_default();
-        register_internal_tools(&mut tools, &exit_code, network, listen_ports);
+        let socket_table = register_internal_tools(&mut tools, &exit_code, network, listen_ports);
         let tools = Arc::new(tools);
         let tools_ref = tools.clone();
 
@@ -2011,6 +2031,7 @@ impl Sandbox {
             file_mapping_path: initrd,
             file_mapping_base: INITRD_MAP_BASE,
             exit_code,
+            socket_table,
         })
     }
 }
@@ -2896,5 +2917,29 @@ mod tests {
             v["result"]["value"], 2,
             "SO_TYPE should return 2 (DGRAM), got: {resp}"
         );
+    }
+
+    // -- SocketTable lifecycle tests ---------------------------------------------
+
+    #[test]
+    fn net_socket_cap() {
+        let mut table = SocketTable::new();
+        for _ in 0..MAX_SOCKETS {
+            let sock = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+            table.insert(HostSocket::Socket(sock, 1)).unwrap();
+        }
+        let sock = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+        assert!(table.insert(HostSocket::Socket(sock, 1)).is_err());
+    }
+
+    #[test]
+    fn socket_table_clear() {
+        let mut table = SocketTable::new();
+        let sock = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+        table.insert(HostSocket::Socket(sock, 1)).unwrap();
+        assert_eq!(table.sockets.len(), 1);
+        table.clear();
+        assert_eq!(table.sockets.len(), 0);
+        assert_eq!(table.next_id, 1);
     }
 }
