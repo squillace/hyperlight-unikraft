@@ -2215,7 +2215,11 @@ pub fn run_vm_capture_output(
     let setup_time = setup_start.elapsed();
 
     // Redirect stderr to a temp file before the call phase
-    let capture_file = std::env::temp_dir().join(format!("hl-capture-{}", std::process::id()));
+    let capture_file = std::env::temp_dir().join(format!(
+        "hl-capture-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
     let capture = stderr_capture::Capture::redirect_to_file(&capture_file)?;
 
     // Phase 2: restore + call — application runs and produces output
