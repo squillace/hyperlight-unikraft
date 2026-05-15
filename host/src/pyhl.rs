@@ -25,7 +25,7 @@
 //! // One-time install (no-op if already present).
 //! pyhl::install(&pyhl::InstallOptions {
 //!     home,
-//!     source: pyhl::InstallSource::Ghcr,
+//!     source: pyhl::InstallSource::Ghcr { tag: None }, // None = :latest
 //!     mounts: &[],
 //!     network: None,
 //!     listen_ports: None,
@@ -104,8 +104,9 @@ pub struct InstallOptions<'a> {
 /// Where `install` pulls its kernel and CPIO from.
 #[derive(Debug)]
 pub enum InstallSource<'a> {
-    /// Pull the default published image from GHCR via docker/podman.
-    Ghcr,
+    /// Pull the published image from GHCR via docker/podman.
+    /// `tag`: `None` pulls `:latest`; `Some("v0.3.1")` pins a release.
+    Ghcr { tag: Option<&'a str> },
     /// Copy from a local python-agent-driver build tree.
     LocalDir(&'a Path),
     /// Explicit files — useful for custom image pipelines.
@@ -164,18 +165,16 @@ pub fn install(opts: &InstallOptions<'_>) -> Result<InstallReport> {
             kernel.to_path_buf(),
             initrd.to_path_buf(),
         ),
-        InstallSource::Ghcr => {
+        InstallSource::Ghcr { tag } => {
+            let kernel_image = ghcr_image_ref(GHCR_KERNEL_REPO, *tag);
+            let initrd_image = ghcr_image_ref(GHCR_INITRD_REPO, *tag);
             let scratch = home.join(".pyhl.download");
             fs::create_dir_all(&scratch)?;
             let k = scratch.join("kernel");
             let i = scratch.join("initrd.cpio");
-            extract_from_ghcr(GHCR_KERNEL_IMAGE, "/kernel", &k)?;
-            extract_from_ghcr(GHCR_INITRD_IMAGE, "/initrd.cpio", &i)?;
-            (
-                format!("ghcr: {GHCR_KERNEL_IMAGE} + {GHCR_INITRD_IMAGE}"),
-                k,
-                i,
-            )
+            extract_from_ghcr(&kernel_image, "/kernel", &k)?;
+            extract_from_ghcr(&initrd_image, "/initrd.cpio", &i)?;
+            (format!("ghcr: {kernel_image} + {initrd_image}"), k, i)
         }
     };
 
@@ -394,13 +393,18 @@ pub fn discover_source_artifacts(dir: &Path) -> Result<(PathBuf, PathBuf)> {
 // through InstallSource::Ghcr.
 // ---------------------------------------------------------------------------
 
-/// OCI image references published by `.github/workflows/publish-examples.yml`.
-/// Both images are FROM-scratch payloads: kernel image has a single /kernel,
-/// initrd image has a single /initrd.cpio.
-pub const GHCR_KERNEL_IMAGE: &str =
-    "ghcr.io/hyperlight-dev/hyperlight-unikraft/python-agent-driver-kernel:latest";
-pub const GHCR_INITRD_IMAGE: &str =
-    "ghcr.io/hyperlight-dev/hyperlight-unikraft/python-agent-driver-initrd:latest";
+/// GHCR repository base (without tag) for the kernel image.
+pub const GHCR_KERNEL_REPO: &str =
+    "ghcr.io/hyperlight-dev/hyperlight-unikraft/python-agent-driver-kernel";
+/// GHCR repository base (without tag) for the initrd image.
+pub const GHCR_INITRD_REPO: &str =
+    "ghcr.io/hyperlight-dev/hyperlight-unikraft/python-agent-driver-initrd";
+
+/// Build a full OCI image reference from a repo base and an optional tag.
+/// `None` resolves to `:latest`.
+pub fn ghcr_image_ref(repo: &str, tag: Option<&str>) -> String {
+    format!("{}:{}", repo, tag.unwrap_or("latest"))
+}
 
 /// Pull a single file out of an OCI image hosted on GHCR. Uses whichever
 /// of `docker` / `podman` is on `$PATH`. The published images are

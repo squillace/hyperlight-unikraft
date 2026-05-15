@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    tags: ['v*']
     paths:
       - 'examples/**'
       - 'runtimes/**'
@@ -48,6 +49,12 @@ jobs:
             -f runtimes/${{ matrix.runtime }}.Dockerfile \
             -t $IMAGE runtimes/
           docker push $IMAGE
+          # Also tag with the release version when triggered by a git tag
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            VERSION_TAG=${{ env.IMAGE_BASE }}/${{ matrix.runtime }}-base:${{ github.ref_name }}
+            docker tag $IMAGE $VERSION_TAG
+            docker push $VERSION_TAG
+          fi
 
   # Build and publish kernels for each example
   publish-kernels:
@@ -152,6 +159,11 @@ jobs:
           DEOF
           docker build -f /tmp/Dockerfile.kernel -t $IMAGE .
           docker push $IMAGE
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            VERSION_TAG=${{ env.IMAGE_BASE }}/${{ matrix.example.name }}-kernel:${{ github.ref_name }}
+            docker tag $IMAGE $VERSION_TAG
+            docker push $VERSION_TAG
+          fi
 
   # Publish the python-agent-driver rootfs CPIO as its own image so
   # `pyhl setup` can pull the initrd (and kernel, above) from GHCR
@@ -205,3 +217,8 @@ jobs:
           DEOF
           docker build -f /tmp/Dockerfile.initrd -t $IMAGE .
           docker push $IMAGE
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            VERSION_TAG=${{ env.IMAGE_BASE }}/python-agent-driver-initrd:${{ github.ref_name }}
+            docker tag $IMAGE $VERSION_TAG
+            docker push $VERSION_TAG
+          fi

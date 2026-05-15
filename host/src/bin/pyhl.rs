@@ -23,8 +23,8 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use hyperlight_unikraft::pyhl::{
-    copy_replace, discover_source_artifacts, extract_from_ghcr, GHCR_INITRD_IMAGE,
-    GHCR_KERNEL_IMAGE,
+    copy_replace, discover_source_artifacts, extract_from_ghcr, ghcr_image_ref, GHCR_INITRD_REPO,
+    GHCR_KERNEL_REPO,
 };
 use hyperlight_unikraft::{AllowList, BlockList, ListenPorts, NetworkPolicy, Preopen, Sandbox};
 use std::fs;
@@ -157,8 +157,13 @@ struct SetupArgs {
     ///
     /// Without --from, pyhl pulls the pre-published image from GHCR (requires
     /// docker or podman on $PATH).
-    #[arg(long, value_name = "DIR")]
+    #[arg(long, value_name = "DIR", conflicts_with = "tag")]
     from: Option<PathBuf>,
+
+    /// Pin a specific GHCR release tag (e.g., "v0.3.1") instead of
+    /// pulling :latest. Ignored when --from is used.
+    #[arg(long, value_name = "TAG", conflicts_with = "from")]
+    tag: Option<String>,
 
     /// Overwrite an existing installed image without prompting.
     #[arg(long)]
@@ -373,15 +378,18 @@ fn cmd_setup(args: SetupArgs) -> Result<()> {
             // No --from: pull from GHCR. Uses docker or podman under the hood
             // because that's the standard OCI client everyone has and avoids
             // linking an oci-distribution client into pyhl.
+            let tag = args.tag.as_deref();
+            let kernel_image = ghcr_image_ref(GHCR_KERNEL_REPO, tag);
+            let initrd_image = ghcr_image_ref(GHCR_INITRD_REPO, tag);
             eprintln!("pyhl: downloading image from GHCR…");
             let tmp = home.join(".pyhl.download");
             fs::create_dir_all(&tmp)?;
             let kernel_path = tmp.join("kernel");
             let initrd_path = tmp.join("initrd.cpio");
-            extract_from_ghcr(GHCR_KERNEL_IMAGE, "/kernel", &kernel_path)?;
-            extract_from_ghcr(GHCR_INITRD_IMAGE, "/initrd.cpio", &initrd_path)?;
+            extract_from_ghcr(&kernel_image, "/kernel", &kernel_path)?;
+            extract_from_ghcr(&initrd_image, "/initrd.cpio", &initrd_path)?;
             (
-                format!("{GHCR_KERNEL_IMAGE} + {GHCR_INITRD_IMAGE}"),
+                format!("{kernel_image} + {initrd_image}"),
                 kernel_path,
                 initrd_path,
             )
