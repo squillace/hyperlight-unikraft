@@ -49,7 +49,7 @@ This project enables running Linux applications (Python, Node.js, Go, Rust, C/C+
 
 ### Key Features
 
-- **Minimal host surface** — the only guest→host channel is the `__dispatch` JSON-RPC bridge, active only when tools, mounts, or networking are configured
+- **Thin, opt-in host surface** — by default, the guest has no access to the host filesystem, network, or any host functions. When you enable features like `--mount`, `--net`, or `--enable-tools`, a single `__dispatch` JSON-RPC bridge is registered as the only guest→host channel. See [HOST_FUNCTIONS.md](HOST_FUNCTIONS.md) for the full list of dispatchable operations
 - **Identity-mapped memory** - Simplified memory layout (vaddr == paddr)
 - **Generic cmdline mechanism** - Pass arguments to any application via `-- arg1 arg2 ...`
 - **Fast cold start** - Hyperlight's lightweight design enables millisecond startup times
