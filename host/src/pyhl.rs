@@ -475,9 +475,7 @@ fn extract_via_oci_api(image: &str, src_path_in_image: &str, dst: &Path) -> Resu
 
     eprintln!("pyhl:   pull {image} (via OCI API)");
 
-    let token_url = format!(
-        "https://ghcr.io/token?scope=repository:{repo}:pull"
-    );
+    let token_url = format!("https://ghcr.io/token?scope=repository:{repo}:pull");
     let token_body: serde_json::Value = serde_json::from_slice(
         &ureq::get(&token_url)
             .call()
@@ -489,9 +487,7 @@ fn extract_via_oci_api(image: &str, src_path_in_image: &str, dst: &Path) -> Resu
         .as_str()
         .ok_or_else(|| anyhow!("GHCR token response missing 'token' field"))?;
 
-    let manifest_url = format!(
-        "https://ghcr.io/v2/{repo}/manifests/{tag}"
-    );
+    let manifest_url = format!("https://ghcr.io/v2/{repo}/manifests/{tag}");
     let manifest: serde_json::Value = serde_json::from_slice(
         &ureq::get(&manifest_url)
             .header("Authorization", &format!("Bearer {token}"))
@@ -528,7 +524,10 @@ fn extract_via_oci_api(image: &str, src_path_in_image: &str, dst: &Path) -> Resu
     for entry in archive.entries()? {
         let mut entry = entry?;
         let path = entry.path()?;
-        if path.to_str().is_some_and(|p| p.trim_start_matches("./") == target_name) {
+        if path
+            .to_str()
+            .is_some_and(|p| p.trim_start_matches("./") == target_name)
+        {
             if let Some(parent) = dst.parent() {
                 std::fs::create_dir_all(parent)?;
             }
