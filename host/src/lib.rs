@@ -2818,14 +2818,11 @@ mod tests {
 
     #[test]
     fn test_fs_read_bytes_capped() {
-        // Request a huge len (well above MAX_FS_READ) on a small file.
-        // Without the cap this would try to allocate terabytes and OOM.
         let root = tmpdir("readcap");
         fs::write(root.join("small.bin"), b"hello").unwrap();
         let mut reg = ToolRegistry::new();
         FsSandbox::new(&root).unwrap().register(&mut reg);
 
-        // Ask for 1 TiB — the cap should silently clamp to MAX_FS_READ.
         let req = br#"{"name":"fs_read_bytes","args":{"path":"small.bin","len":1099511627776}}"#;
         let resp = reg.dispatch(req);
         let s = std::str::from_utf8(&resp).unwrap();
@@ -2835,14 +2832,8 @@ mod tests {
 
     #[test]
     fn test_sleep_capped() {
-        // Verify the cap constant and that sleeping with a huge value
-        // completes quickly (the cap brings it down to 60 s max, but we
-        // pass 0 to keep the test instant — the important thing is
-        // confirming the cap constant exists and has the right value).
         assert_eq!(MAX_SLEEP_NS, 60_000_000_000);
 
-        // Dispatch a sleep with ns=0 through the real handler to confirm
-        // the code path works.
         let mut tools = ToolRegistry::new();
         let exit_code = Arc::new(AtomicI32::new(0));
         register_internal_tools(&mut tools, &exit_code, None, None);
@@ -2851,5 +2842,28 @@ mod tests {
         let resp = tools.dispatch(req);
         let s = std::str::from_utf8(&resp).unwrap();
         assert!(!s.contains("\"error\""), "sleep(0) should succeed: {s}");
+    }
+
+    #[test]
+    fn net_getsockopt_returns_correct_type_for_dgram() {
+        let mut reg = ToolRegistry::new();
+        let policy = NetworkPolicy::AllowAll;
+        register_net_tools(&mut reg, &policy, None);
+
+        let req = br#"{"name":"net_socket","args":{"family":2,"type":2}}"#;
+        let resp = std::str::from_utf8(&reg.dispatch(req)).unwrap().to_string();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let fd = v["result"]["fd"].as_u64().unwrap();
+
+        let req =
+            format!(r#"{{"name":"net_getsockopt","args":{{"fd":{fd},"level":1,"optname":3}}}}"#);
+        let resp = std::str::from_utf8(&reg.dispatch(req.as_bytes()))
+            .unwrap()
+            .to_string();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            v["result"]["value"], 2,
+            "SO_TYPE should return 2 (DGRAM), got: {resp}"
+        );
     }
 }
