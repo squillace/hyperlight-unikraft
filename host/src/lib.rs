@@ -2806,10 +2806,12 @@ mod tests {
     fn test_fs_read_bytes_capped() {
         let root = tmpdir("readcap");
         fs::write(root.join("small.bin"), b"hello").unwrap();
+        let preopens = vec![Preopen::new(&root, "/host").unwrap()];
         let mut reg = ToolRegistry::new();
-        FsSandbox::new(&root).unwrap().register(&mut reg);
+        FsRouter::new(&preopens).unwrap().register(&mut reg);
 
-        let req = br#"{"name":"fs_read_bytes","args":{"path":"small.bin","len":1099511627776}}"#;
+        let req =
+            br#"{"name":"fs_read_bytes","args":{"path":"/host/small.bin","len":1099511627776}}"#;
         let resp = reg.dispatch(req);
         let s = std::str::from_utf8(&resp).unwrap();
         assert!(!s.contains("\"error\""), "should succeed: {s}");
