@@ -174,11 +174,7 @@ pub fn install(opts: &InstallOptions<'_>) -> Result<InstallReport> {
             let i = scratch.join("initrd.cpio");
             extract_from_ghcr(&kernel_image, "/kernel", &k)?;
             extract_from_ghcr(&initrd_image, "/initrd.cpio", &i)?;
-            (
-                format!("ghcr: {kernel_image} + {initrd_image}"),
-                k,
-                i,
-            )
+            (format!("ghcr: {kernel_image} + {initrd_image}"), k, i)
         }
     };
 
