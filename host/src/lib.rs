@@ -324,7 +324,32 @@ fn dns_resolvers() -> &'static HashSet<IpAddr> {
             }
             set
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let mut set = HashSet::new();
+            if let Ok(output) = std::process::Command::new("ipconfig").arg("/all").output() {
+                let text = String::from_utf8_lossy(&output.stdout);
+                let mut in_dns_block = false;
+                for line in text.lines() {
+                    let trimmed = line.trim();
+                    if let Some(rest) = trimmed.strip_prefix("DNS Servers") {
+                        in_dns_block = true;
+                        let value = rest.trim_start_matches(['.', ' ', ':']);
+                        if let Ok(ip) = value.parse::<IpAddr>() {
+                            set.insert(ip);
+                        }
+                    } else if in_dns_block {
+                        if let Ok(ip) = trimmed.parse::<IpAddr>() {
+                            set.insert(ip);
+                        } else {
+                            in_dns_block = false;
+                        }
+                    }
+                }
+            }
+            set
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             HashSet::new()
         }
