@@ -1057,7 +1057,10 @@ fn learn_ips_from_dns_response(data: &[u8], al: &AllowList) {
         match rtype {
             1 if rdlen == 4 => {
                 let ip = IpAddr::V4(std::net::Ipv4Addr::new(
-                    data[pos], data[pos + 1], data[pos + 2], data[pos + 3],
+                    data[pos],
+                    data[pos + 1],
+                    data[pos + 2],
+                    data[pos + 3],
                 ));
                 al.learn_ip(ip);
             }
